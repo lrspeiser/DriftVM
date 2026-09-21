@@ -1,0 +1,23 @@
+name: build-and-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j2
+      - name: Smoke evolution
+        run: ./build/driftvm --births 10000 --population 128 --seed 1 --report-every 5000 --out out/smoke
+      - name: Verify outputs
+        run: |
+          test -s out/smoke/events.csv
+          test -s out/smoke/summary.txt
+          cat out/smoke/summary.txt
