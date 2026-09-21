@@ -1,0 +1,53 @@
+{
+  "original": {
+    "task": "MIN",
+    "checked": 65536,
+    "parent_verified_mask": 32,
+    "child": {
+      "id": "7077250",
+      "parent": "7076946",
+      "birth": 7076994,
+      "depth": 15509,
+      "pool": "archived",
+      "genome": "01170a13011a0c1c0004160e00110b141811180b1d1b1c1116071c0313000a1214191e140f0e1a141a14151a1d1f120e0c0306090f1b0d041a141f14131a131e10181d1e1e1f0910031912131e1504191e1d120b161e05160c1910120c0813:0d0d0d10010a0e040d030606040a010c140012030e0506020c0006130107020e061402070713100412120f09110f0c030611010800001312010b0105010014040b090e07080e10110512100514090c09140d080b130303050c0e000a100b05120606030e0a0511140c020f10040d1414060e0306140a0d01140d0e0211140012",
+      "change": "Insert opcode 9 at zero-based position 70; language unchanged",
+      "blocks": 0
+    },
+    "ancestor": {
+      "id": "7076946",
+      "parent": "unknown",
+      "birth": 7076690,
+      "depth": 15508,
+      "pool": "archived",
+      "genome": "01170a13011a0c1c0004160e00110b141811180b1d1b1c1116071c0313000a1214191e140f0e1a141a14151a1d1f120e0c0306090f1b0d041a141f14131a131e10181d1e1e1f10031912131e1504191e1d120b161e05160c1910120c0813:0d0d0d10010a0e040d030606040a010c140012030e0506020c0006130107020e061402070713100412120f09110f0c030611010800001312010b0105010014040b090e07080e10110512100514090c09140d080b130303050c0e000a100b05120606030e0a0511140c020f10040d1414060e0306140a0d01140d0e0211140012",
+      "change": "Insert opcode 9 at zero-based position 70; language unchanged",
+      "blocks": 0
+    }
+  },
+  "reduced": {
+    "task": "MIN",
+    "checked": 65536,
+    "parent_verified_mask": 32,
+    "child": {
+      "id": "7077250",
+      "parent": "7076946",
+      "birth": 7076994,
+      "depth": 15509,
+      "pool": "archived",
+      "genome": "0f1a1e1f0910030813:0d0d0d10010a0e040d030606040a010c140012030e0506020c0006130107020e061402070713100412120f09110f0c030611010800001312010b0105010014040b090e07080e10110512100514090c09140d080b130303050c0e000a100b05120606030e0a0511140c020f10040d1414060e0306140a0d01140d0e0211140012",
+      "change": "Insert opcode 9 at zero-based position 70; language unchanged",
+      "blocks": 0
+    },
+    "ancestor": {
+      "id": "7076946",
+      "parent": "unknown",
+      "birth": 7076690,
+      "depth": 15508,
+      "pool": "archived",
+      "genome": "0f1a1e1f10030813:0d0d0d10010a0e040d030606040a010c140012030e0506020c0006130107020e061402070713100412120f09110f0c030611010800001312010b0105010014040b090e07080e10110512100514090c09140d080b130303050c0e000a100b05120606030e0a0511140c020f10040d1414060e0306140a0d01140d0e0211140012",
+      "change": "Insert opcode 9 at zero-based position 70; language unchanged",
+      "blocks": 0
+    }
+  },
+  "provenance": "User-supplied MIN record. Parent reconstructed by reversing I 70 9. Short forms are human post-hoc reductions. Not seeded into evolutionary runs. Parent birth follows the recorded v0.1 id = birth + 256 convention."
+}

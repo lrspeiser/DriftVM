@@ -1,93 +1,98 @@
 # DriftVM
 
-C++20 hosts an evolutionary experiment. Each organism contains a small bytecode program and its own inherited mapping from 32 opcodes to four fixed micro-operations. Both the program and the opcode meanings can mutate. No LLM or native-code execution is involved.
+An artificial-life experiment in executable computation. Programs mutate, their inherited instruction meanings can change, and computational tests determine what they actually do. The host is **C++20**, not an LLM. Organisms execute bounded custom bytecode, not native machine code.
 
-## Current version: Cambrian-0.1
+## New: Cambrian-0.2 — reusable blocks + Evolution Lab
 
-This corrects the Cambrian-0 baseline; it is not yet macro crystallization or an open-ended language generator.
+The next experiment lets programs **factor existing sequences into inherited blocks**, reuse them, mutate their bodies, and build blocks from earlier blocks. The browser shows actual living programs and verified discoveries, with an interactive microscope that steps through execution.
 
-- **Fair scoring:** parent and replacement comparisons use current living task counts, never stored historical scores. A task's reward recovers when its carriers disappear.
-- **Protected populations:** by default 192 performance slots, 32 novelty slots and 32 fitness-neutral drift slots. Novelty is not added to computational performance. Ten percent of parent selections allow cross-pool transfer.
-- **Verified discoveries:** 32 training inputs and 128 screening inputs identify candidates; a discovery is certified only after checking all 65,536 byte-input pairs. Every final candidate survivor is also checked exhaustively.
-- **Real fossils:** full founder genomes, exact deltas for every admitted offspring, population snapshots, and complete first-verified specimens with disassembly and parent/mutation metadata.
-- **Safe runs:** refuse existing output directories, validate arguments, and stop launchers on build/test failures.
+The original Cambrian-0.1 engine and result folders remain intact. The new experiment is a separate executable, `driftvm_lab`.
 
-The corrected experiment uses a new sampling algorithm and new selection rules. Seed 1 does not reproduce the old Cambrian-0 trajectory. Keep old result folders as baseline evidence, not as a control that isolates just one change.
+### Windows: update, build, test, run, watch
 
-## Windows: update, build, test, run
-
-Inside your existing DriftVM folder in PowerShell:
+From your existing DriftVM folder in PowerShell:
 
 ```powershell
 git pull --ff-only
 if ($LASTEXITCODE -ne 0) { throw "Git update failed" }
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_lab.ps1 -Births 10000000 -Seed 1
+```
+
+This builds Release in `build-lab`, runs the lab regression tests, starts ten million births, and opens your browser on an unused **local** port. It creates a new output folder and refuses to overwrite previous results. Git, CMake, a C++20 compiler and **Python 3.9+** are required. No Python packages, Node, GPU, API key or cloud service is needed to run the lab.
+
+Keep the terminal open. Closing the browser does not stop evolution. **Ctrl+C closes the viewer and stops its unfinished child experiment.** Completed snapshots and ancestry remain on disk, but there is no resumable checkpoint. After evolution completes, the viewer remains available until you close it.
+
+### What you can see
+
+- **Living population:** one clickable tile per actual program, grouped into performance, novelty and drift pools. Color indicates a screened task candidate; a dot marks inherited blocks.
+- **Verified discoveries:** first certified specimens, their birth times, and immediate parent/child comparisons. Certification means all 65,536 byte-input pairs passed.
+- **Program microscope:** choose inputs, run the specimen, and step through register changes, memory, conditional skips and emitted answers. Inspect block definitions and the actual executed trace.
+- **MAX → MIN case study:** replay the recorded one-instruction transition. Switch between original programs and clearly labeled human-reduced explanations. These examples never seed evolution.
+
+`Pause view` pauses only the display. The engine writes completed snapshots every 10,000 births by default; the UI does not pretend to animate every birth.
+
+### View your previous run without starting evolution
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_lab.ps1 -View "out\cambrian01-seed-1-20260920-222213-261-95605b"
+```
+
+The viewer supports existing Cambrian-0.1 and new Cambrian-0.2 folders. It cannot add historical parent witnesses or blocks that an old run never recorded. Change the path for a different run.
+
+### Linux / macOS
+
+```bash
+cmake -S lab -B build-lab -DCMAKE_BUILD_TYPE=Release
+cmake --build build-lab --parallel
+ctest --test-dir build-lab --output-on-failure
+python3 scripts/lab.py --run out/new-lab-run --launch build-lab/driftvm_lab --births 10000000 --seed 1 --open
+```
+
+For a short first experiment use `--births 10000`, or `-Births 10000` in the Windows launcher.
+
+## What the new experiment tests
+
+A factoring mutation changes the **representation**, not the underlying machine. Blocks expand into the unchanged baseline VM; the fully expanded program remains limited to 96 primitive instructions. Conditional skips and primitive immediate values retain exactly the same semantics. There is no free computing reward for hiding operations inside a block.
+
+Later mutations can reuse calls, modify shared bodies and compose blocks. This creates different paths through program space. The hypothesis is that this helps discover useful constructions; the implementation does not establish that hypothesis by itself.
+
+Block depth, source compression, unfamiliar probe outputs and repeated references are **not** measures of intelligence or proof of useful abstraction. The resource suite still contains ten predefined tasks. This is not unrestricted language evolution, an open-ended task ecology, or LLM training.
+
+Controlled runs within version 0.2:
+
+```powershell
+.\scripts\run_lab.ps1 -Births 1000000 -Seed 2
+.\scripts\run_lab.ps1 -Births 1000000 -Seed 2 -NoModules
+.\scripts\run_lab.ps1 -Births 1000000 -Seed 2 -NoDrift
+.\scripts\run_lab.ps1 -Births 1000000 -Seed 2 -NoModules -NoDrift
+```
+
+Use multiple seeds and matched computational budgets. Each command needs its own terminal or a closed prior viewer. `NoDrift` removes protected random-replacement slots, not every form of stochastic drift. The new mutation rules change trajectories; old and new seed-1 results do not isolate one mechanism.
+
+See **[the full Cambrian-0.2 protocol](docs/CAMBRIAN_02.md)** for persistence, ancestry replay, execution limits, validation, and interpretation.
+
+## Baseline: Cambrian-0.1 remains available
+
+The `driftvm` executable and `scripts/run_long.ps1` retain the corrected baseline:
+
+- Current living task counts determine comparable ecological scores; rewards recover when carriers disappear.
+- Separate performance, novelty and protected fitness-neutral drift populations.
+- Candidate screening on 32 training and 128 screening inputs; exhaustive first-discovery and final-candidate verification over all 65,536 pairs.
+- Founder genomes, exact admitted-child deltas, population inspection snapshots and full first-verified specimens.
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_long.ps1 -Births 10000000 -Seed 1
 ```
 
-The launcher builds Release, runs the regression tests and starts ten million births. It automatically creates a unique directory under `out/`. It never overwrites a previous experiment. Git, CMake and a C++20 compiler are required; Python 3 enables the additional integration/replay tests but is not required for the simulator or core tests.
+The root CMake build builds both engines and tests. The new launcher uses the standalone `lab` build. Old snapshots are inspection records, not resumable checkpoints.
 
-For a shorter first run, use `-Births 100000`. Optional `-Out "out/my-new-experiment"` selects a **new** directory. Run the commands from your checkout folder.
-
-## Linux / macOS
-
-```bash
-git pull --ff-only && bash scripts/run_long.sh 10000000 1
-```
-
-Manual build:
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-./build/driftvm --births 100000 --seed 1 --out out/new-run
-```
-
-## Reading the output
-
-`VERIFIED task=XOR ... inputs=65536` certifies that particular saved genome, not all its descendants. A first verified birth of zero means a random founder already had the capability.
-
-`verified_tasks=5/10` counts task types ever certified. `best_candidate_quality` is a stable, unpenalized score for screened candidates, not a proof of correctness. `admitted_behaviors` counts distinct 32-probe output vectors ever admitted, not independent algorithms or complexity. `live_behaviors` counts their current diversity. Birth count and lineage depth are reported separately.
-
-Summary task columns distinguish candidate evaluations, admitted candidate matches, final candidate carriers, and final **exhaustively verified** carriers. Repeated matches are not independent inventions. Certification is a separate measurement: screen-only false positives may still receive selection rewards, and the final check makes this limitation visible.
-
-## Saved files
-
-| File | Purpose |
-|---|---|
-| `config.txt` | Version, source revision, seeds, actual probes and configuration |
-| `summary.txt` | Candidate counts versus verified outcomes |
-| `progress.csv` | Time series of diversity, depth, acceptance and certified tasks |
-| `events.csv` | Accepted births and every 10,000th rejected birth; `--all-events` saves all |
-| `lineage.tsv` | All founders and exact mutation deltas for every admitted child |
-| `population-N.tsv` | Full population at birth N; inspection snapshots, not resumable checkpoints |
-| `discoveries.csv` | First certified specimen for each task |
-| `discoveries/TASK.genome` and `.txt` | Executable genome and readable disassembly/provenance |
-| `final-verification.csv` | Exhaustive verification of each final candidate survivor, including counterexamples |
-
-Millions of admitted births can still produce hundreds of megabytes or more of lineage/event data. Population snapshots preserve everything alive at each report; ancestry deltas preserve extinct parents. Keep the output directory together. There is no automatic resume yet.
-
-## Inspect or reconstruct a specimen
-
-Windows:
+For an old specimen:
 
 ```powershell
 .\build\Release\driftvm.exe --inspect out\YOUR-RUN\discoveries\XOR.genome
 python scripts\replay.py out\YOUR-RUN\lineage.tsv 12345 --out specimen.genome
-.\build\Release\driftvm.exe --inspect specimen.genome
 ```
 
-Replace `12345` with an actual admitted ID. The replay script verifies mutation preimages and uses memory proportional to the living population. A first-discovery child can have been rejected by selection; its full specimen and final mutation are still saved separately. No source programs from the old CSV-only run can be recovered without rerunning its original binary/configuration.
+Use an actual admitted ID. Old `lineage.tsv` and new `lineage-modules.tsv` have different replay readers; see the respective protocol. Keep all files in each result folder together. Millions of admitted births can still produce substantial lineage data.
 
-## Controlled comparisons
-
-```powershell
-.\scripts\run_long.ps1 -Births 1000000 -Seed 1
-.\scripts\run_long.ps1 -Births 1000000 -Seed 1 -NoDrift
-.\scripts\run_long.ps1 -Births 1000000 -Seed 1 -FixedLanguage
-.\scripts\run_long.ps1 -Births 1000000 -Seed 1 -NoDrift -FixedLanguage
-```
-
-Use multiple seeds. `NoDrift` removes the protected random-replacement pool; it does **not** eliminate all stochastic drift (equal-score reproduction remains). `FixedLanguage` freezes each founder's dialect, not a single universal instruction set. Low-level options include `--novelty-fraction 0`, `--drift-fraction 0`, `--semantic-mutation-rate 0` and `--world-seed N`.
-
-See [the corrected protocol](docs/CAMBRIAN_01.md) for limits and validation. The original [design notes](docs/DESIGN.md) describe the baseline and longer-term aspirations; their Cambrian-0 selection/logging details are superseded by this version.
+[Baseline protocol](docs/CAMBRIAN_01.md) · [Original design and longer-term aspirations](docs/DESIGN.md)
