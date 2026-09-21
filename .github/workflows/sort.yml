@@ -1,0 +1,39 @@
+name: native-sort-goal
+on:
+  pull_request:
+    paths: ['sort/**', 'scripts/sort_goal.py', 'scripts/run_sort.ps1', '.github/workflows/sort.yml']
+  push:
+    branches: [main]
+    paths: ['sort/**', 'scripts/sort_goal.py', 'scripts/run_sort.ps1', '.github/workflows/sort.yml']
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify available Rust compiler
+        run: rustc --version
+      - name: C++ and Rust end-to-end goal smoke test
+        run: python scripts/sort_goal.py --births 4000 --rounds 2 --rows 256 --trials 3 --confirm-trials 5 --finalists 2 --require-rust --no-browser --out out/sort-ci
+      - name: Windows launcher end-to-end smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_sort.ps1 -Births 200 -Rounds 1 -Seed 2 -RequireRust -NoBrowser -Out out/sort-launcher-ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sort-goal-${{ matrix.os }}
+          path: |
+            out/sort-ci/manifest.json
+            out/sort-ci/run.log
+            out/sort-ci/verdict.json
+            out/sort-ci/report.html
+            out/sort-ci/confirmation.csv
+            out/sort-launcher-ci/run.log
