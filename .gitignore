@@ -1,4 +1,7 @@
 build/
+build-lab/
 out/
+__pycache__/
+*.pyc
 *.log
 .DS_Store
