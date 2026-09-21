@@ -2,7 +2,21 @@
 
 An artificial-life experiment in executable computation. Programs mutate, their inherited instruction meanings can change, and computational tests determine what they actually do. The host is **C++20**, not an LLM. Organisms execute bounded custom bytecode, not native machine code.
 
-## New: Cambrian-0.2 — reusable blocks + Evolution Lab
+## New objective: DriftSort-0.3 — beat measured reference routines
+
+Sort eight unsigned integers correctly, then try to beat actual optimized C++ and Rust reference implementations. The controller measures ordinary standard-library sorting and specialized 19-comparator routines first, evolves a task-specific min/max/copy instruction language with inherited blocks, compiles candidates, and feeds measured winners into subsequent search phases. A separate confirmation run decides whether the goal was met. This does not claim a universal replacement for C++ or Rust.
+
+```powershell
+git pull --ff-only
+if ($LASTEXITCODE -ne 0) { throw "Git update failed" }
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_sort.ps1 -Births 10000000 -Rounds 3 -Seed 1
+```
+
+Ten million births **total**, a browser scoreboard, native C++/Rust exports, and resumable completed-phase checkpoints. The same CMake/C++/Python tools are used. Rust is tested when `rustc` is installed; otherwise it is explicitly NOT MEASURED, never declared beaten. Add `-RequireRust` to require that comparison. No automatic installations or external services. Previous experiments remain unchanged.
+
+Read **[the sorting goal, proof, measurement protocol and continuation commands](docs/SORT_GOAL.md)**. This is a separate `sort` build, not a change to the historical VM below.
+
+## Cambrian-0.2 — reusable blocks + Evolution Lab
 
 The next experiment lets programs **factor existing sequences into inherited blocks**, reuse them, mutate their bodies, and build blocks from earlier blocks. The browser shows actual living programs and verified discoveries, with an interactive microscope that steps through execution.
 
