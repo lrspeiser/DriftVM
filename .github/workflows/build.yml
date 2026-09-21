@@ -1,23 +1,30 @@
 name: build-and-smoke
-
 on:
   push:
     branches: [main]
   pull_request:
-
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        run: cmake --build build -j2
-      - name: Smoke evolution
-        run: ./build/driftvm --births 10000 --population 128 --seed 1 --report-every 5000 --out out/smoke
-      - name: Verify outputs
-        run: |
-          test -s out/smoke/events.csv
-          test -s out/smoke/summary.txt
-          cat out/smoke/summary.txt
+        run: cmake --build build --config Release --parallel 2
+      - name: Regression and replay tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Windows launcher smoke test
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\run_long.ps1 -Births 10000 -Seed 1 -ReportEvery 5000 -Out out\launcher-smoke
+      - name: Linux launcher smoke test
+        if: runner.os == 'Linux'
+        run: bash scripts/run_long.sh 10000 1 out/launcher-smoke
