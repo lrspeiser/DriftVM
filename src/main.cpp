@@ -1,441 +1,200 @@
-#include <algorithm>
-#include <array>
-#include <cstdint>
+#include "core.hpp"
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
-#include <random>
-#include <sstream>
-#include <string>
+#include <limits>
 #include <unordered_map>
-#include <vector>
-
+#include <unordered_set>
+#ifndef DRIFTVM_REVISION
+#define DRIFTVM_REVISION "unknown"
+#endif
 namespace driftvm {
-
-constexpr std::size_t kRegisters = 8;
-constexpr std::size_t kMemory = 32;
-constexpr std::size_t kOpcodes = 32;
-constexpr std::size_t kMicroOpsPerOpcode = 4;
-constexpr std::size_t kInitialProgramLength = 24;
-constexpr std::size_t kMinProgramLength = 4;
-constexpr std::size_t kMaxProgramLength = 96;
-constexpr std::size_t kProbeCount = 16;
-constexpr std::size_t kMaxStepsPerProbe = 128;
-
-enum class MicroOp : uint8_t {
-  NOP, LOAD_A, LOAD_B, LOAD_IMM, MOV, ADD, SUB, XOR, AND, OR,
-  SHL1, SHR1, INC, DEC, LOAD_MEM, STORE_MEM, CMP_EQ, CMP_LT,
-  SKIP_IF_ZERO, SKIP_IF_NONZERO, EMIT, COUNT
-};
-
-constexpr std::size_t kMicroOpCount = static_cast<std::size_t>(MicroOp::COUNT);
-
-struct Semantics {
-  std::array<MicroOp, kMicroOpsPerOpcode> ops{};
-};
-
-struct Genome {
-  std::vector<uint8_t> program;
-  std::array<Semantics, kOpcodes> language;
-};
-
-struct Behavior {
-  std::array<uint8_t, kProbeCount> output{};
-  uint64_t signature = 0;
-  double reward = 0.0;
-  double novelty = 0.0;
-  int resources = 0;
-};
-
-struct Organism {
-  uint64_t id = 0;
-  uint64_t parent_id = 0;
-  uint64_t birth = 0;
-  Genome genome;
-  Behavior behavior;
-  double score = 0.0;
-};
-
+namespace fs=std::filesystem;
+constexpr const char* VERSION="Cambrian-0.1";
 struct Config {
-  uint64_t births = 100000;
-  std::size_t population = 256;
-  uint64_t seed = 1;
-  uint64_t report_every = 10000;
-  std::string out = "out/run";
-  double semantic_mutation_rate = 0.003;
-  double drift_survival_rate = 0.01;
+  uint64_t births=100000,seed=1,world_seed=20260920,report_every=100000;
+  std::size_t population=256;
+  double semantic_rate=.003,novelty_fraction=.125,drift_fraction=.125;
+  std::string out="out/run",inspect;bool all_events=false;
 };
-
-struct Probe {
-  uint8_t a;
-  uint8_t b;
-};
-
-using ResourceFn = uint8_t (*)(uint8_t, uint8_t);
-
-struct Resource {
-  std::string name;
-  ResourceFn fn;
-  double base_reward;
-};
-
-static uint8_t r_xor(uint8_t a, uint8_t b) { return a ^ b; }
-static uint8_t r_add(uint8_t a, uint8_t b) { return static_cast<uint8_t>(a + b); }
-static uint8_t r_sub(uint8_t a, uint8_t b) { return static_cast<uint8_t>(a - b); }
-static uint8_t r_and(uint8_t a, uint8_t b) { return a & b; }
-static uint8_t r_or(uint8_t a, uint8_t b) { return a | b; }
-static uint8_t r_max(uint8_t a, uint8_t b) { return std::max(a, b); }
-static uint8_t r_min(uint8_t a, uint8_t b) { return std::min(a, b); }
-static uint8_t r_eq(uint8_t a, uint8_t b) { return a == b ? 1 : 0; }
-static uint8_t r_parity(uint8_t a, uint8_t b) {
-  uint8_t x = static_cast<uint8_t>(a ^ b);
-  x ^= static_cast<uint8_t>(x >> 4);
-  x ^= static_cast<uint8_t>(x >> 2);
-  x ^= static_cast<uint8_t>(x >> 1);
-  return x & 1;
+uint64_t integer(const std::string& s){
+  if(s.empty()||s.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("expected nonnegative integer: "+s);
+  std::size_t used=0;auto n=std::stoull(s,&used);if(used!=s.size())throw std::runtime_error("invalid integer");return n;
 }
-static uint8_t r_rotate_xor(uint8_t a, uint8_t b) {
-  uint8_t r = static_cast<uint8_t>((a << 1) | (a >> 7));
-  return static_cast<uint8_t>(r ^ b);
+double probability(const std::string& s){
+  std::size_t used=0;auto p=std::stod(s,&used);
+  if(used!=s.size()||!std::isfinite(p)||p<0||p>1)throw std::runtime_error("probability must be finite and in [0,1]");
+  return p;
 }
-
-const std::array<Resource, 10> kResources{{
-  {"XOR", r_xor, 8.0},
-  {"ADD", r_add, 8.0},
-  {"SUB", r_sub, 8.0},
-  {"AND", r_and, 7.0},
-  {"OR", r_or, 7.0},
-  {"MAX", r_max, 9.0},
-  {"MIN", r_min, 9.0},
-  {"EQ", r_eq, 11.0},
-  {"PARITY", r_parity, 13.0},
-  {"ROTATE_XOR", r_rotate_xor, 15.0},
-}};
-
-uint64_t fnv1a(const std::array<uint8_t, kProbeCount>& data) {
-  uint64_t h = 1469598103934665603ull;
-  for (auto x : data) {
-    h ^= x;
-    h *= 1099511628211ull;
+Config parse(int argc,char** argv){
+  Config c;for(int i=1;i<argc;++i){std::string a=argv[i];
+    auto next=[&](){if(i+1>=argc)throw std::runtime_error("missing value for "+a);return std::string(argv[++i]);};
+    if(a=="--births")c.births=integer(next());else if(a=="--seed")c.seed=integer(next());
+    else if(a=="--world-seed")c.world_seed=integer(next());else if(a=="--population")c.population=std::size_t(integer(next()));
+    else if(a=="--report-every")c.report_every=integer(next());else if(a=="--out")c.out=next();
+    else if(a=="--semantic-mutation-rate")c.semantic_rate=probability(next());
+    else if(a=="--novelty-fraction")c.novelty_fraction=probability(next());
+    else if(a=="--drift-fraction")c.drift_fraction=probability(next());
+    else if(a=="--inspect")c.inspect=next();else if(a=="--all-events")c.all_events=true;
+    else if(a=="--drift-survival-rate")throw std::runtime_error("use --drift-fraction; the old mixed-score survival rule was removed");
+    else if(a=="--help"||a=="-h"){
+      std::cout<<"DriftVM "<<VERSION<<"\n--births N --population N --seed N --world-seed N\n"
+        <<"--out NEW_DIRECTORY --report-every N (0 disables interim reports)\n"
+        <<"--semantic-mutation-rate P --novelty-fraction P --drift-fraction P\n"
+        <<"--all-events (otherwise accepted births plus every 10000th failure)\n"
+        <<"--inspect FILE.genome (exhaustively verify and disassemble a saved organism)\n";std::exit(0);
+    }else throw std::runtime_error("unknown argument: "+a);
   }
-  return h;
+  if(c.population<8||c.population>1000000)throw std::runtime_error("population must be 8..1000000");
+  if(c.novelty_fraction+c.drift_fraction>.875)throw std::runtime_error("reserve at least 12.5% for performance");
+  if(c.births>std::numeric_limits<uint64_t>::max()-uint64_t(c.population)-1)throw std::runtime_error("birth ID overflow");
+  return c;
 }
-
-class Simulation {
+struct Organism{uint64_t id=0,parent=0,birth=0,depth=0;Genome genome;Behavior behavior;std::string mutation;};
+class Simulation{
+  Config c;Rng rng;std::vector<Probe> training,screen;
+  std::vector<Organism> population;Counts live{},candidate_births{},admitted_matches{},verification_failures{},first_verified{};
+  Mask verified=0;std::unordered_map<std::string,uint64_t> historical,live_behaviors;
+  std::unordered_set<std::string> failed_validation_cache;
+  std::array<std::size_t,4> boundaries{};
+  std::ofstream lineage,events,discoveries,progress;
+  uint64_t next_id=1,accepted=0,semantic_births=0,semantic_admitted=0,verification_inputs=0;
+  std::array<uint64_t,3> lane_admitted{};
+  const std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
+  fs::path path(const std::string& name)const{return fs::path(c.out)/name;}
+  void open(std::ofstream& f,const std::string& name){f.exceptions(std::ios::failbit|std::ios::badbit);f.open(path(name));}
+  static const char* name(std::size_t lane){return lane==0?"performance":lane==1?"novelty":"drift";}
+  std::size_t lane_of(std::size_t i)const{return i<boundaries[1]?0:i<boundaries[2]?1:2;}
+  double score(const Behavior& b,std::size_t lane)const{
+    if(lane==0)return ecological_score(b.candidates,live);
+    auto it=historical.find(b.signature);return lane==1?1.0/(1.0+double(it==historical.end()?0:it->second)):0;
+  }
+  std::size_t parent(std::size_t lane){
+    // Protected pools reproduce themselves, with occasional cross-pool transfer.
+    if(rng.unit()<.10)return rng.index(population.size());
+    auto pick=[&](){return boundaries[lane]+rng.index(boundaries[lane+1]-boundaries[lane]);};
+    auto a=pick(),b=pick();if(lane==2)return a;
+    double sa=score(population[a].behavior,lane),sb=score(population[b].behavior,lane);
+    return sa==sb?(rng.index(2)?a:b):(sa>sb?a:b);
+  }
+  void add_live(const Behavior& b){++live_behaviors[b.signature];
+    for(std::size_t t=0;t<10;++t)if(b.candidates&(1u<<t))++live[t];}
+  void remove_live(const Behavior& b){
+    auto it=live_behaviors.find(b.signature);if(it==live_behaviors.end()||!it->second)throw std::runtime_error("live behavior underflow");
+    if(!--it->second)live_behaviors.erase(it);
+    for(std::size_t t=0;t<10;++t)if(b.candidates&(1u<<t)){if(!live[t])throw std::runtime_error("live task underflow");--live[t];}
+  }
+  void admit_counts(const Behavior& b){++historical[b.signature];for(std::size_t t=0;t<10;++t)if(b.candidates&(1u<<t))++admitted_matches[t];}
+  void candidate_counts(const Behavior& b){for(std::size_t t=0;t<10;++t)if(b.candidates&(1u<<t))++candidate_births[t];}
+  void record_discovery(const Organism& o,std::size_t t){
+    verified|=Mask(1u<<t);first_verified[t]=o.birth;
+    save_genome(o.genome,path(std::string("discoveries/")+TASKS[t]+".genome").string());
+    std::ofstream text;open(text,std::string("discoveries/")+TASKS[t]+".txt");
+    text<<"id="<<o.id<<" parent="<<o.parent<<" birth="<<o.birth<<" depth="<<o.depth<<"\nverified_inputs=65536\nmutation="<<o.mutation<<'\n';
+    disassemble(o.genome,text);
+    discoveries<<t<<','<<TASKS[t]<<','<<o.id<<','<<o.parent<<','<<o.birth<<','<<o.depth<<",65536\n";discoveries.flush();
+    std::cout<<"VERIFIED task="<<TASKS[t]<<" birth="<<o.birth<<" id="<<o.id<<" inputs=65536\n"<<std::flush;
+  }
+  void check_new_discoveries(const Organism& o){
+    const Mask todo=Mask(o.behavior.candidates&Mask(~verified));if(!todo)return;
+    auto key=pack(o.genome);if(failed_validation_cache.count(key))return;
+    bool failed=false;for(std::size_t t=0;t<10;++t)if(todo&(1u<<t)){
+      auto v=verify(o.genome,t);verification_inputs+=v.checked;
+      if(v.pass)record_discovery(o,t);else{++verification_failures[t];failed=true;}}
+    if(failed){if(failed_validation_cache.size()>=8192)failed_validation_cache.clear();failed_validation_cache.insert(std::move(key));}
+  }
+  void save_population(uint64_t birth){
+    // Inspection snapshots, not resumable RNG checkpoints. Lineage preserves extinct ancestors.
+    std::ofstream out;open(out,"population-"+std::to_string(birth)+".tsv");
+    out<<"id\tparent\tbirth\tdepth\tpool\tcandidate_mask\tgenome\n";
+    for(std::size_t i=0;i<population.size();++i){const auto& o=population[i];
+      out<<o.id<<'\t'<<o.parent<<'\t'<<o.birth<<'\t'<<o.depth<<'\t'<<name(lane_of(i))<<'\t'<<o.behavior.candidates<<'\t'<<pack(o.genome)<<'\n';}
+  }
+  void report(uint64_t birth){
+    double best=0;uint64_t depth=0;std::size_t bearers=0;
+    for(const auto& o:population){best=std::max(best,quality(o.behavior.candidates));depth=std::max(depth,o.depth);if(o.behavior.candidates)++bearers;}
+    unsigned tasks=0;for(unsigned t=0;t<10;++t)if(verified&(1u<<t))++tasks;
+    const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+    std::cout<<"birth="<<birth<<" verified_tasks="<<tasks<<"/10 best_candidate_quality="<<best
+      <<" admitted_behaviors="<<historical.size()<<" live_behaviors="<<live_behaviors.size()
+      <<" candidate_bearers="<<bearers<<" max_lineage_depth="<<depth<<" accepted="<<accepted<<'\n'<<std::flush;
+    progress<<birth<<','<<tasks<<','<<best<<','<<historical.size()<<','<<live_behaviors.size()<<','<<bearers<<','<<depth<<','<<accepted<<','<<elapsed<<'\n';
+    lineage.flush();events.flush();progress.flush();save_population(birth);
+  }
  public:
-  explicit Simulation(Config cfg)
-      : cfg_(std::move(cfg)), rng_(cfg_.seed), byte_(0, 255), opcode_(0, kOpcodes - 1) {
-    probes_ = make_probes();
-    std::filesystem::create_directories(cfg_.out);
-    events_.open(std::filesystem::path(cfg_.out) / "events.csv");
-    events_ << "birth,id,parent,survived,replaced,score,reward,novelty,resources,signature,program_len,semantic_mutation\n";
+  explicit Simulation(Config cfg):c(std::move(cfg)),rng(c.seed),training(probes(c.world_seed,32)),screen(probes(c.world_seed^0x517cc1b727220a95ULL,128)){
+    // create_directory is an atomic claim; never truncate an old experiment.
+    fs::path root(c.out);if(!root.parent_path().empty())fs::create_directories(root.parent_path());
+    if(!fs::create_directory(root))throw std::runtime_error("output already exists; choose a new --out directory: "+c.out);
+    fs::create_directory(path("discoveries"));
+    auto novelty=std::size_t(double(c.population)*c.novelty_fraction),drift=std::size_t(double(c.population)*c.drift_fraction);
+    boundaries={0,c.population-novelty-drift,c.population-drift,c.population};
+    open(lineage,"lineage.tsv");lineage<<"id\tparent\tbirth\tdepth\treplaced\treason\tmutation\n";
+    open(events,"events.csv");events<<"birth,id,parent,survived,pool,reason,child_current_score,victim_current_score,candidate_mask,semantic_change\n";
+    open(discoveries,"discoveries.csv");discoveries<<"task_index,task,id,parent,birth,depth,checked_inputs\n";
+    open(progress,"progress.csv");progress<<"birth,verified_tasks,best_candidate_quality,admitted_behaviors,live_behaviors,candidate_bearers,max_lineage_depth,accepted,elapsed_seconds\n";
+    std::ofstream manifest;open(manifest,"config.txt");manifest<<"version="<<VERSION<<"\nrevision="<<DRIFTVM_REVISION
+      <<"\nseed="<<c.seed<<"\nworld_seed="<<c.world_seed<<"\nbirths="<<c.births<<"\npopulation="<<c.population
+      <<"\nsemantic_mutation_rate="<<c.semantic_rate<<"\nnovelty_fraction="<<c.novelty_fraction<<"\ndrift_fraction="<<c.drift_fraction
+      <<"\nreport_every="<<c.report_every<<"\nall_events="<<c.all_events<<"\ntraining_probes=32\nscreening_probes=128\n";
+    for(std::size_t l=0;l<3;++l)manifest<<name(l)<<"_slots="<<boundaries[l+1]-boundaries[l]<<'\n';
+    manifest<<"sampling=mt19937_64_rejection_v1\nvm=forward_bytecode_v1_implicit_output\n";
+    for(auto p:training)manifest<<"training="<<unsigned(p.a)<<','<<unsigned(p.b)<<'\n';
+    for(auto p:screen)manifest<<"screening="<<unsigned(p.a)<<','<<unsigned(p.b)<<'\n';
+    std::cout<<"DriftVM "<<VERSION<<" revision="<<DRIFTVM_REVISION<<" performance="<<boundaries[1]<<" novelty="<<novelty<<" drift="<<drift<<'\n';
   }
-
-  void run() {
-    initialize_population();
-
-    for (uint64_t birth = 1; birth <= cfg_.births; ++birth) {
-      const std::size_t parent_idx = select_parent();
-      Organism child = population_[parent_idx];
-      child.parent_id = child.id;
-      child.id = next_id_++;
-      child.birth = birth;
-
-      const bool semantic_mutation = mutate(child.genome);
-      child.behavior = evaluate(child.genome);
-      child.score = child.behavior.reward + child.behavior.novelty;
-
-      const std::size_t victim_idx = random_index(population_.size());
-      const auto victim_score = population_[victim_idx].score;
-      const bool better = child.score > victim_score;
-      const bool neutral = uniform01() < cfg_.drift_survival_rate;
-      const bool survives = better || neutral;
-
-      uint64_t replaced_id = 0;
-      if (survives) {
-        replaced_id = population_[victim_idx].id;
-        population_[victim_idx] = child;
-        note_behavior(child.behavior.signature);
-        note_resources(child.genome);
-      }
-
-      events_ << birth << ',' << child.id << ',' << child.parent_id << ','
-              << (survives ? 1 : 0) << ',' << replaced_id << ','
-              << std::fixed << std::setprecision(6) << child.score << ','
-              << child.behavior.reward << ',' << child.behavior.novelty << ','
-              << child.behavior.resources << ',' << child.behavior.signature << ','
-              << child.genome.program.size() << ',' << (semantic_mutation ? 1 : 0) << '\n';
-
-      if (cfg_.report_every && birth % cfg_.report_every == 0) {
-        report(birth);
-      }
+  void run(){
+    population.reserve(c.population);
+    for(std::size_t i=0;i<c.population;++i){Organism o;o.id=next_id++;o.genome=founder(rng);o.mutation="F "+pack(o.genome);o.behavior=evaluate(o.genome,training,screen);
+      candidate_counts(o.behavior);check_new_discoveries(o);add_live(o.behavior);admit_counts(o.behavior);
+      lineage<<o.id<<"\t0\t0\t0\t0\tfounder\tF "<<pack(o.genome)<<'\n';population.push_back(std::move(o));}
+    save_population(0);
+    for(uint64_t birth=1;birth<=c.births;++birth){
+      auto victim=rng.index(population.size()),lane=lane_of(victim);Organism child=population[parent(lane)];
+      child.parent=child.id;child.id=next_id++;child.birth=birth;++child.depth;
+      auto mutation=mutate(child.genome,rng,c.semantic_rate);child.mutation=mutation.delta;semantic_births+=mutation.semantic?1:0;
+      child.behavior=evaluate(child.genome,training,screen);candidate_counts(child.behavior);
+      // Certification is an observer, not an extra selection reward; no positive controls are seeded.
+      check_new_discoveries(child);
+      const double cs=score(child.behavior,lane),vs=score(population[victim].behavior,lane);
+      const bool tie_accept=rng.index(2)==0;
+      const bool keep=lane==2||cs>vs||(cs==vs&&tie_accept);
+      const char* reason=lane==2?"drift":cs>vs?"better":cs==vs?"neutral":"rejected";
+      if(keep||c.all_events||birth%10000==0)events<<birth<<','<<child.id<<','<<child.parent<<','<<keep<<','<<name(lane)<<','
+        <<(keep?reason:"rejected")<<','<<std::setprecision(17)<<cs<<','<<vs<<','<<child.behavior.candidates<<','<<mutation.semantic<<'\n';
+      if(keep){++accepted;++lane_admitted[lane];semantic_admitted+=mutation.semantic?1:0;
+        lineage<<child.id<<'\t'<<child.parent<<'\t'<<birth<<'\t'<<child.depth<<'\t'<<population[victim].id<<'\t'<<name(lane)<<'_'<<reason<<'\t'<<mutation.delta<<'\n';
+        remove_live(population[victim].behavior);add_live(child.behavior);admit_counts(child.behavior);population[victim]=std::move(child);}
+      if(c.report_every&&birth%c.report_every==0)report(birth);
     }
-
-    write_summary();
-  }
-
- private:
-  Config cfg_;
-  std::mt19937_64 rng_;
-  std::uniform_int_distribution<int> byte_;
-  std::uniform_int_distribution<int> opcode_;
-  std::array<Probe, kProbeCount> probes_{};
-  std::vector<Organism> population_;
-  std::unordered_map<uint64_t, uint64_t> behavior_counts_;
-  std::array<uint64_t, kResources.size()> resource_discoveries_{};
-  std::ofstream events_;
-  uint64_t next_id_ = 1;
-
-  std::array<Probe, kProbeCount> make_probes() {
-    std::array<Probe, kProbeCount> p{};
-    std::mt19937_64 r(cfg_.seed ^ 0x9E3779B97F4A7C15ull);
-    std::uniform_int_distribution<int> d(0, 255);
-    for (auto& x : p) x = {static_cast<uint8_t>(d(r)), static_cast<uint8_t>(d(r))};
-    p[0] = {0, 0};
-    p[1] = {0, 255};
-    p[2] = {255, 0};
-    p[3] = {255, 255};
-    return p;
-  }
-
-  void initialize_population() {
-    population_.reserve(cfg_.population);
-    for (std::size_t i = 0; i < cfg_.population; ++i) {
-      Organism o;
-      o.id = next_id_++;
-      o.genome = random_genome();
-      o.behavior = evaluate(o.genome);
-      o.score = o.behavior.reward + o.behavior.novelty;
-      population_.push_back(std::move(o));
-      note_behavior(population_.back().behavior.signature);
-      note_resources(population_.back().genome);
-    }
-  }
-
-  Genome random_genome() {
-    Genome g;
-    g.program.resize(kInitialProgramLength);
-    for (auto& x : g.program) x = static_cast<uint8_t>(opcode_(rng_));
-    for (auto& sem : g.language) {
-      for (auto& op : sem.ops) {
-        op = static_cast<MicroOp>(random_index(kMicroOpCount));
-      }
-    }
-    return g;
-  }
-
-  bool mutate(Genome& g) {
-    std::uniform_int_distribution<int> edits_dist(1, 3);
-    const int edits = edits_dist(rng_);
-    for (int e = 0; e < edits; ++e) {
-      const int kind = static_cast<int>(random_index(3));
-      if (kind == 0 || g.program.size() <= kMinProgramLength) {
-        g.program[random_index(g.program.size())] = static_cast<uint8_t>(opcode_(rng_));
-      } else if (kind == 1 && g.program.size() < kMaxProgramLength) {
-        auto pos = g.program.begin() + static_cast<std::ptrdiff_t>(random_index(g.program.size() + 1));
-        g.program.insert(pos, static_cast<uint8_t>(opcode_(rng_)));
-      } else if (g.program.size() > kMinProgramLength) {
-        auto pos = g.program.begin() + static_cast<std::ptrdiff_t>(random_index(g.program.size()));
-        g.program.erase(pos);
-      }
-    }
-
-    bool semantic = false;
-    if (uniform01() < cfg_.semantic_mutation_rate) {
-      auto& sem = g.language[random_index(kOpcodes)];
-      sem.ops[random_index(kMicroOpsPerOpcode)] =
-          static_cast<MicroOp>(random_index(kMicroOpCount));
-      semantic = true;
-    }
-    return semantic;
-  }
-
-  Behavior evaluate(const Genome& g) {
-    Behavior b;
-    for (std::size_t i = 0; i < probes_.size(); ++i) {
-      b.output[i] = execute(g, probes_[i]);
-    }
-    b.signature = fnv1a(b.output);
-
-    for (std::size_t r = 0; r < kResources.size(); ++r) {
-      bool match = true;
-      for (std::size_t i = 0; i < probes_.size(); ++i) {
-        if (b.output[i] != kResources[r].fn(probes_[i].a, probes_[i].b)) {
-          match = false;
-          break;
-        }
-      }
-      if (match) {
-        const double crowding = 1.0 + static_cast<double>(resource_discoveries_[r]) / 1000.0;
-        b.reward += kResources[r].base_reward / crowding;
-        ++b.resources;
-      }
-    }
-
-    auto it = behavior_counts_.find(b.signature);
-    const uint64_t seen = it == behavior_counts_.end() ? 0 : it->second;
-    b.novelty = 2.0 / (1.0 + static_cast<double>(seen));
-    return b;
-  }
-
-  uint8_t execute(const Genome& g, Probe p) const {
-    std::array<uint8_t, kRegisters> r{};
-    std::array<uint8_t, kMemory> mem{};
-    r[0] = p.a;
-    r[1] = p.b;
-    std::size_t pc = 0;
-    uint8_t last_emit = 0;
-    bool emitted = false;
-
-    for (std::size_t step = 0; step < kMaxStepsPerProbe && !g.program.empty(); ++step) {
-      const uint8_t code = g.program[pc % g.program.size()] % kOpcodes;
-      const auto& sem = g.language[code];
-      bool skip_next_opcode = false;
-
-      for (auto op : sem.ops) {
-        switch (op) {
-          case MicroOp::NOP: break;
-          case MicroOp::LOAD_A: r[2] = p.a; break;
-          case MicroOp::LOAD_B: r[2] = p.b; break;
-          case MicroOp::LOAD_IMM: r[2] = code; break;
-          case MicroOp::MOV: r[3] = r[2]; break;
-          case MicroOp::ADD: r[2] = static_cast<uint8_t>(r[2] + r[3]); break;
-          case MicroOp::SUB: r[2] = static_cast<uint8_t>(r[2] - r[3]); break;
-          case MicroOp::XOR: r[2] ^= r[3]; break;
-          case MicroOp::AND: r[2] &= r[3]; break;
-          case MicroOp::OR: r[2] |= r[3]; break;
-          case MicroOp::SHL1: r[2] = static_cast<uint8_t>(r[2] << 1); break;
-          case MicroOp::SHR1: r[2] = static_cast<uint8_t>(r[2] >> 1); break;
-          case MicroOp::INC: ++r[2]; break;
-          case MicroOp::DEC: --r[2]; break;
-          case MicroOp::LOAD_MEM: r[2] = mem[r[3] % kMemory]; break;
-          case MicroOp::STORE_MEM: mem[r[3] % kMemory] = r[2]; break;
-          case MicroOp::CMP_EQ: r[2] = (r[2] == r[3]) ? 1 : 0; break;
-          case MicroOp::CMP_LT: r[2] = (r[2] < r[3]) ? 1 : 0; break;
-          case MicroOp::SKIP_IF_ZERO: if (r[2] == 0) skip_next_opcode = true; break;
-          case MicroOp::SKIP_IF_NONZERO: if (r[2] != 0) skip_next_opcode = true; break;
-          case MicroOp::EMIT: last_emit = r[2]; emitted = true; break;
-          case MicroOp::COUNT: break;
-        }
-      }
-      pc += skip_next_opcode ? 2 : 1;
-      if (pc >= g.program.size()) break;
-    }
-    return emitted ? last_emit : r[2];
-  }
-
-  std::size_t select_parent() {
-    const std::size_t a = random_index(population_.size());
-    const std::size_t b = random_index(population_.size());
-    if (population_[a].score == population_[b].score) {
-      return uniform01() < 0.5 ? a : b;
-    }
-    return population_[a].score > population_[b].score ? a : b;
-  }
-
-  void note_behavior(uint64_t sig) { ++behavior_counts_[sig]; }
-
-  void note_resources(const Genome& g) {
-    Behavior b = evaluate(g);
-    for (std::size_t r = 0; r < kResources.size(); ++r) {
-      bool match = true;
-      for (std::size_t i = 0; i < probes_.size(); ++i) {
-        if (b.output[i] != kResources[r].fn(probes_[i].a, probes_[i].b)) {
-          match = false;
-          break;
-        }
-      }
-      if (match) ++resource_discoveries_[r];
-    }
-  }
-
-  void report(uint64_t birth) {
-    double best = 0.0;
-    double avg = 0.0;
-    std::size_t resource_bearers = 0;
-    for (const auto& o : population_) {
-      best = std::max(best, o.score);
-      avg += o.score;
-      if (o.behavior.resources > 0) ++resource_bearers;
-    }
-    avg /= std::max<std::size_t>(1, population_.size());
-    std::cout << "birth=" << birth
-              << " best=" << std::fixed << std::setprecision(3) << best
-              << " avg=" << avg
-              << " behaviors=" << behavior_counts_.size()
-              << " resource_bearers=" << resource_bearers
-              << '\n';
-  }
-
-  void write_summary() {
-    std::ofstream out(std::filesystem::path(cfg_.out) / "summary.txt");
-    out << "DriftVM Cambrian-0\n";
-    out << "seed=" << cfg_.seed << "\n";
-    out << "births=" << cfg_.births << "\n";
-    out << "population=" << cfg_.population << "\n";
-    out << "distinct_behaviors=" << behavior_counts_.size() << "\n";
-    out << "resource_discoveries:\n";
-    for (std::size_t i = 0; i < kResources.size(); ++i) {
-      out << "  " << kResources[i].name << "=" << resource_discoveries_[i] << "\n";
-    }
-  }
-
-  std::size_t random_index(std::size_t n) {
-    std::uniform_int_distribution<std::size_t> d(0, n - 1);
-    return d(rng_);
-  }
-
-  double uniform01() {
-    return std::generate_canonical<double, 64>(rng_);
+    if(!c.report_every||c.births%c.report_every!=0||c.births==0)report(c.births);
+    // Verify every surviving candidate, not every one of millions of trial offspring.
+    std::cout<<"Checking final candidate survivors on all 65536 inputs...\n"<<std::flush;
+    Counts final_verified{};std::ofstream final;open(final,"final-verification.csv");
+    final<<"id,task,pass,checked_inputs,counterexample_a,counterexample_b,actual,expected\n";
+    for(const auto& o:population)for(std::size_t t=0;t<10;++t)if(o.behavior.candidates&(1u<<t)){
+      auto v=verify(o.genome,t);verification_inputs+=v.checked;if(v.pass)++final_verified[t];
+      final<<o.id<<','<<TASKS[t]<<','<<v.pass<<','<<v.checked<<','<<v.a<<','<<v.b<<','<<v.actual<<','<<v.expected<<'\n';}
+    std::ofstream summary;open(summary,"summary.txt");
+    summary<<"DriftVM "<<VERSION<<"\nseed="<<c.seed<<"\nbirths="<<c.births<<"\npopulation="<<c.population
+      <<"\naccepted_offspring="<<accepted<<"\ndistinct_admitted_probe_behaviors="<<historical.size()
+      <<"\nsemantic_mutant_births="<<semantic_births<<"\nsemantic_mutants_admitted="<<semantic_admitted
+      <<"\nexhaustive_verifier_inputs="<<verification_inputs<<"\n";
+    for(std::size_t l=0;l<3;++l)summary<<name(l)<<"_accepted="<<lane_admitted[l]<<'\n';
+    summary<<"task,verified_ever,first_verified_birth,candidate_evaluations,admitted_candidate_matches,final_candidate_carriers,final_verified_carriers,discovery_verification_failures\n";
+    for(std::size_t t=0;t<10;++t)summary<<TASKS[t]<<','<<bool(verified&(1u<<t))<<','<<((verified&(1u<<t))?std::to_string(first_verified[t]):"NA")
+      <<','<<candidate_births[t]<<','<<admitted_matches[t]<<','<<live[t]<<','<<final_verified[t]<<','<<verification_failures[t]<<'\n';
+    summary<<"\nCandidate matches are not independent discoveries. Verification certifies the finite byte-input domain only.\n";
+    std::cout<<"Completed. Results: "<<c.out<<"\n";
   }
 };
-
-Config parse_args(int argc, char** argv) {
-  Config cfg;
-  auto need_value = [&](int& i) -> std::string {
-    if (i + 1 >= argc) throw std::runtime_error(std::string("missing value after ") + argv[i]);
-    return argv[++i];
-  };
-
-  for (int i = 1; i < argc; ++i) {
-    const std::string a = argv[i];
-    if (a == "--births") cfg.births = std::stoull(need_value(i));
-    else if (a == "--population") cfg.population = std::stoull(need_value(i));
-    else if (a == "--seed") cfg.seed = std::stoull(need_value(i));
-    else if (a == "--report-every") cfg.report_every = std::stoull(need_value(i));
-    else if (a == "--out") cfg.out = need_value(i);
-    else if (a == "--semantic-mutation-rate") cfg.semantic_mutation_rate = std::stod(need_value(i));
-    else if (a == "--drift-survival-rate") cfg.drift_survival_rate = std::stod(need_value(i));
-    else if (a == "--help" || a == "-h") {
-      std::cout
-          << "DriftVM Cambrian-0\n"
-          << "  --births N                    total mutant births (default 100000)\n"
-          << "  --population N                live population (default 256)\n"
-          << "  --seed N                      deterministic random seed\n"
-          << "  --report-every N              console progress interval\n"
-          << "  --out PATH                    output directory\n"
-          << "  --semantic-mutation-rate P    probability per birth\n"
-          << "  --drift-survival-rate P       neutral replacement probability\n";
-      std::exit(0);
-    } else {
-      throw std::runtime_error("unknown argument: " + a);
-    }
-  }
-
-  if (cfg.population < 2) throw std::runtime_error("population must be >= 2");
-  return cfg;
-}
-
-}  // namespace driftvm
-
-int main(int argc, char** argv) {
-  try {
-    driftvm::Simulation sim(driftvm::parse_args(argc, argv));
-    sim.run();
-    return 0;
-  } catch (const std::exception& e) {
-    std::cerr << "error: " << e.what() << '\n';
-    return 1;
-  }
-}
+int inspect(const std::string& file){auto g=load_genome(file);disassemble(g,std::cout);unsigned passed=0;
+  for(std::size_t t=0;t<10;++t){auto v=verify(g,t);passed+=v.pass?1:0;std::cout<<TASKS[t]<<": "<<(v.pass?"VERIFIED":"NO_MATCH")<<" checked="<<v.checked;
+    if(!v.pass)std::cout<<" counterexample="<<v.a<<','<<v.b<<" actual="<<v.actual<<" expected="<<v.expected;
+    std::cout<<'\n';}
+  std::cout<<"verified_tasks="<<passed<<"/10\n";return 0;}
+} // namespace driftvm
+int main(int argc,char** argv){try{auto c=driftvm::parse(argc,argv);if(!c.inspect.empty())return driftvm::inspect(c.inspect);
+  driftvm::Simulation sim(c);sim.run();return 0;}catch(const std::exception& e){std::cerr<<"error: "<<e.what()<<'\n';return 1;}}
